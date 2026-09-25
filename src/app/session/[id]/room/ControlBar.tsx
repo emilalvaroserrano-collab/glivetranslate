@@ -58,7 +58,14 @@ export default function ControlBar({
   }
 
   async function toggleScreenShare() {
-    await localParticipant.setScreenShareEnabled(!sharing);
+    if (sharing) {
+      await localParticipant.setScreenShareEnabled(false);
+      return;
+    }
+
+    // Ask LiveKit for screen-share audio as well as video. Browsers still let
+    // the user decide whether the selected tab/window/system audio is shared.
+    await localParticipant.setScreenShareEnabled(true, { audio: true });
   }
 
   async function copyInvite() {
@@ -89,41 +96,39 @@ export default function ControlBar({
     <div className="jitsi-toolbox-wrap">
       <div className="jitsi-toolbox" role="toolbar" aria-label="Meeting controls">
         <ToolButton
-          on={micOn}
-          danger={!micOn}
+          toggled={false}
           onClick={toggleMic}
           label={micOn ? "Mute" : "Unmute"}
           icon={micOn ? <MicOnIcon /> : <MicOffIcon />}
         />
         <ToolButton
-          on={camOn}
-          danger={!camOn}
+          toggled={false}
           onClick={toggleCam}
           label={camOn ? "Stop video" : "Start video"}
           icon={camOn ? <CamOnIcon /> : <CamOffIcon />}
         />
         <ToolButton
-          on={sharing}
+          toggled={sharing}
           onClick={toggleScreenShare}
-          label={sharing ? "Stop sharing" : "Share screen"}
+          label={sharing ? "Stop screen sharing" : "Share your screen"}
           icon={<ScreenShareIcon />}
         />
         <ToolButton
-          on={captionsOpen}
+          toggled={captionsOpen}
           onClick={onToggleCaptions}
           label="Captions"
           icon={<CaptionsIcon />}
         />
         <ToolButton
-          on={false}
+          toggled={false}
           onClick={copyInvite}
-          label={copied ? "Copied" : "Invite"}
+          label={copied ? "Meeting link copied" : "Copy meeting link"}
           icon={<LinkIcon />}
         />
 
         <div className="jitsi-more-wrap" ref={moreRef}>
           <ToolButton
-            on={moreOpen}
+            toggled={moreOpen}
             onClick={() => setMoreOpen((value) => !value)}
             label="More actions"
             icon={<MoreIcon />}
@@ -156,25 +161,23 @@ export default function ControlBar({
 }
 
 function ToolButton({
-  on,
-  danger = false,
+  toggled,
   onClick,
   label,
   icon,
 }: {
-  on: boolean;
-  danger?: boolean;
+  toggled: boolean;
   onClick: () => void;
   label: string;
   icon: React.ReactNode;
 }) {
   return (
     <button
-      className={`jitsi-tool-button${on ? " is-on" : ""}${danger ? " is-danger" : ""}`}
+      className={`jitsi-tool-button${toggled ? " is-on" : ""}`}
       onClick={onClick}
       title={label}
       aria-label={label}
-      aria-pressed={on}
+      aria-pressed={toggled}
     >
       {icon}
       <span className="jitsi-tool-label">{label}</span>

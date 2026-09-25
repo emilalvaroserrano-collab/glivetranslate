@@ -11,38 +11,42 @@ import {
 } from "livekit-client";
 import { NATIVE_LANG, PARTICIPANT_LANG_ATTR } from "@/lib/config";
 
-// Translator-track name format set by the Python agent in
-// translator/src/session.py: f"tx:{speaker_identity}:{target_lang}"
 const TRANSLATION_TRACK_PREFIX = "tx:";
+type TranslationSource = "mic" | "share";
 
 function parseTranslationTrackName(
   name: string,
-): { sourceIdentity: string; targetLang: string } | null {
+): {
+  sourceIdentity: string;
+  sourceKind: TranslationSource;
+  targetLang: string;
+} | null {
   if (!name.startsWith(TRANSLATION_TRACK_PREFIX)) return null;
+
   const parts = name.slice(TRANSLATION_TRACK_PREFIX.length).split(":");
   if (parts.length < 2) return null;
-  // Identity can theoretically contain ":"; treat the last segment as the
-  // target language and join the rest back.
+
+  // New format: tx:<mic|share>:<speaker_identity>:<target_lang>.
+  // Keep the previous tx:<speaker_identity>:<target_lang> format readable
+  // during rolling deployments.
+  let sourceKind: TranslationSource = "mic";
+  if (parts[0] === "mic" || parts[0] === "share") {
+    sourceKind = parts.shift() as TranslationSource;
+  }
+
   const targetLang = parts.pop()!;
   const sourceIdentity = parts.join(":");
   if (!sourceIdentity || !targetLang) return null;
-  return { sourceIdentity, targetLang };
+
+  return { sourceIdentity, sourceKind, targetLang };
 }
 
 /**
- * Subscribes/unsubscribes to audio tracks based on the listener's chosen
- * language. Encodes the routing predicate from grill Q8:
- *
- *   for each remote participant P (human or agent):
- *     - if P is human and (myLang === 'none' OR P.lang === myLang):
- *         subscribe to mic; never subscribe to a translator track for P
- *     - if P is human and P.lang !== myLang:
- *         unsubscribe from mic; the agent's translator track will cover us
- *     - if P is the agent:
- *         for each of P's audio tracks:
- *           subscribe iff target_lang === myLang AND
- *                        source_identity belongs to a peer whose lang !== myLang
- *           else unsubscribe
+ * Client-side subscription routing:
+ * - microphone audio stays native for native listeners or same-language peers
+ * - screen-share audio stays native only for listeners who explicitly choose
+ *   native passthrough; translated listeners hear the agent's share track
+ * - translator tracks are selected by source kind + target language
  */
 export function useTranslationRouting(myLang: string) {
   const room = useRoomContext();
@@ -53,48 +57,63 @@ export function useTranslationRouting(myLang: string) {
     const apply = () => {
       const remotes = Array.from(room.remoteParticipants.values());
       const peerLangs = new Map<string, string | undefined>();
-      for (const p of remotes) {
-        if (p.kind === ParticipantKind.AGENT) continue;
-        peerLangs.set(p.identity, p.attributes?.[PARTICIPANT_LANG_ATTR]);
+
+      for (const participant of remotes) {
+        if (participant.kind === ParticipantKind.AGENT) continue;
+        peerLangs.set(
+          participant.identity,
+          participant.attributes?.[PARTICIPANT_LANG_ATTR],
+        );
       }
 
-      for (const p of remotes) {
-        if (p.kind === ParticipantKind.AGENT) {
-          applyAgentSubscriptions(p, myLang, peerLangs);
+      for (const participant of remotes) {
+        if (participant.kind === ParticipantKind.AGENT) {
+          applyAgentSubscriptions(participant, myLang, peerLangs);
         } else {
-          applyHumanSubscriptions(p, myLang);
+          applyHumanSubscriptions(participant, myLang);
         }
       }
     };
 
     apply();
 
-    const handlers: Array<[Parameters<typeof room.on>[0], () => void]> = [
-      [RoomEvent.ParticipantConnected, apply],
-      [RoomEvent.ParticipantDisconnected, apply],
-      [RoomEvent.ParticipantAttributesChanged, apply],
-      [RoomEvent.TrackPublished, apply],
-      [RoomEvent.TrackUnpublished, apply],
-      [RoomEvent.LocalTrackPublished, apply],
-    ];
-    for (const [event, handler] of handlers) {
-      room.on(event, handler);
-    }
+    const events = [
+      RoomEvent.ParticipantConnected,
+      RoomEvent.ParticipantDisconnected,
+      RoomEvent.ParticipantAttributesChanged,
+      RoomEvent.TrackPublished,
+      RoomEvent.TrackUnpublished,
+      RoomEvent.TrackSubscribed,
+      RoomEvent.TrackUnsubscribed,
+      RoomEvent.LocalTrackPublished,
+    ] as const;
+
+    for (const event of events) room.on(event, apply);
     return () => {
-      for (const [event, handler] of handlers) {
-        room.off(event, handler);
-      }
+      for (const event of events) room.off(event, apply);
     };
   }, [room, myLang]);
 }
 
-function applyHumanSubscriptions(p: RemoteParticipant, myLang: string) {
-  const theirLang = p.attributes?.[PARTICIPANT_LANG_ATTR];
-  const hearNative = myLang === NATIVE_LANG || theirLang === myLang;
+function applyHumanSubscriptions(
+  participant: RemoteParticipant,
+  myLang: string,
+) {
+  const theirLang =
+    participant.attributes?.[PARTICIPANT_LANG_ATTR];
+  const hearMicNative =
+    myLang === NATIVE_LANG || theirLang === myLang;
+  const hearShareNative = myLang === NATIVE_LANG;
 
-  for (const pub of p.audioTrackPublications.values()) {
-    if (pub.source !== Track.Source.Microphone) continue;
-    setSubscribed(pub, hearNative);
+  for (const publication of participant.audioTrackPublications.values()) {
+    if (publication.source === Track.Source.Microphone) {
+      setSubscribed(publication, hearMicNative);
+      continue;
+    }
+
+    if (publication.source === Track.Source.ScreenShareAudio) {
+      setSubscribed(publication, hearShareNative);
+    }
   }
 }
 
@@ -103,28 +122,37 @@ function applyAgentSubscriptions(
   myLang: string,
   peerLangs: Map<string, string | undefined>,
 ) {
-  for (const pub of agent.audioTrackPublications.values()) {
-    const parsed = parseTranslationTrackName(pub.trackName);
-    if (!parsed) {
-      // Not a translation track (e.g., agent state audio). Don't touch.
-      continue;
-    }
+  for (const publication of agent.audioTrackPublications.values()) {
+    const parsed = parseTranslationTrackName(publication.trackName);
+    if (!parsed) continue;
 
     if (myLang === NATIVE_LANG) {
-      setSubscribed(pub, false);
+      setSubscribed(publication, false);
       continue;
     }
 
-    const matchesMe = parsed.targetLang === myLang;
-    const speakerLang = peerLangs.get(parsed.sourceIdentity);
-    const speakerNotMyLang = speakerLang !== myLang;
+    const matchesTarget = parsed.targetLang === myLang;
 
-    setSubscribed(pub, matchesMe && speakerNotMyLang);
+    // Screen-share media can be in a different language from the sharer's
+    // participant language, so always route a matching translated share track.
+    if (parsed.sourceKind === "share") {
+      setSubscribed(publication, matchesTarget);
+      continue;
+    }
+
+    const speakerLang = peerLangs.get(parsed.sourceIdentity);
+    setSubscribed(
+      publication,
+      matchesTarget && speakerLang !== myLang,
+    );
   }
 }
 
-function setSubscribed(pub: RemoteTrackPublication, desired: boolean) {
-  if (pub.isSubscribed !== desired) {
-    pub.setSubscribed(desired);
+function setSubscribed(
+  publication: RemoteTrackPublication,
+  desired: boolean,
+) {
+  if (publication.isSubscribed !== desired) {
+    publication.setSubscribed(desired);
   }
 }

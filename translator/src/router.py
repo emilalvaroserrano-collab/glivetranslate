@@ -1,4 +1,9 @@
-"""Reconciles the set of active GeminiSession instances to room demand."""
+"""Reconciles active Gemini translation sessions to room demand.
+
+Microphone audio and screen-share audio are independent translation sources.
+That distinction is important because one participant may publish both at the
+same time and shared media may be in a different language from the sharer.
+"""
 
 from __future__ import annotations
 
@@ -17,36 +22,32 @@ from session import GeminiSession
 
 logger = logging.getLogger("translator.router")
 
-# (speaker_identity, target_lang)
-SessionKey = tuple[str, str]
+# (speaker_identity, source_kind, target_lang)
+# source_kind is "mic" or "share".
+SessionKey = tuple[str, str, str]
+TrackKey = tuple[str, str]
 
 
 class TranslationRouter:
-    """Owns the room's translation-session lifecycle.
+    """Own the room's translation-session lifecycle.
 
-    Demand model (from grill Q16):
-      A session (S, T) exists iff there is at least one listener with lang == T
-      AND speaker S has an enabled mic track AND S.lang != T.
+    Microphone sessions are created only when the speaker has a declared
+    language different from the target language.
 
-    Mute or last-listener-leaves triggers a SESSION_GRACE_SEC teardown so brief
-    coughs/toggles don't thrash Gemini connections.
+    Screen-share-audio sessions are created for every requested target
+    language. We intentionally do not assume the shared media language equals
+    the sharer's participant language.
     """
 
     def __init__(self, room: rtc.Room, gemini_api_key: str) -> None:
         self._room = room
         self._gemini_api_key = gemini_api_key
 
-        # Per-speaker mic track that is currently subscribed and unmuted.
-        self._speaker_tracks: dict[str, rtc.RemoteAudioTrack] = {}
+        # A participant may publish mic + screen-share audio simultaneously.
+        self._speaker_tracks: dict[TrackKey, rtc.RemoteAudioTrack] = {}
 
-        # Active sessions keyed by (speaker_identity, target_lang).
         self._sessions: dict[SessionKey, GeminiSession] = {}
-
-        # Pending teardown timers keyed the same way.
         self._grace_tasks: dict[SessionKey, asyncio.Task] = {}
-
-        # Detached close tasks (fire-and-forget); we keep references to prevent
-        # the GC from collecting them mid-shutdown.
         self._detached_tasks: set[asyncio.Task] = set()
 
         self._reconcile_handle: asyncio.TimerHandle | None = None
@@ -73,24 +74,38 @@ class TranslationRouter:
         @room.on("track_subscribed")
         def _on_subscribed(
             track: rtc.Track,
-            _pub: rtc.RemoteTrackPublication,
+            pub: rtc.RemoteTrackPublication,
             participant: rtc.RemoteParticipant,
         ) -> None:
-            if track.kind == rtc.TrackKind.KIND_AUDIO and isinstance(
-                track, rtc.RemoteAudioTrack
+            source_kind = self._source_kind(pub)
+            if (
+                source_kind
+                and track.kind == rtc.TrackKind.KIND_AUDIO
+                and isinstance(track, rtc.RemoteAudioTrack)
             ):
-                self._speaker_tracks[participant.identity] = track
+                self._speaker_tracks[(participant.identity, source_kind)] = track
+                logger.info(
+                    "audio source subscribed participant=%s source=%s",
+                    participant.identity,
+                    source_kind,
+                )
                 self._schedule_reconcile()
 
         @room.on("track_unsubscribed")
         def _on_unsubscribed(
             track: rtc.Track,
-            _pub: rtc.RemoteTrackPublication,
+            pub: rtc.RemoteTrackPublication,
             participant: rtc.RemoteParticipant,
         ) -> None:
-            if track.kind == rtc.TrackKind.KIND_AUDIO:
-                self._speaker_tracks.pop(participant.identity, None)
-                self._schedule_reconcile()
+            source_kind = self._source_kind(pub)
+            if not source_kind or track.kind != rtc.TrackKind.KIND_AUDIO:
+                return
+
+            key = (participant.identity, source_kind)
+            current = self._speaker_tracks.get(key)
+            if current is track:
+                self._speaker_tracks.pop(key, None)
+            self._schedule_reconcile()
 
         @room.on("track_muted")
         def _on_muted(_pub: rtc.TrackPublication, _p: rtc.Participant) -> None:
@@ -100,15 +115,19 @@ class TranslationRouter:
         def _on_unmuted(_pub: rtc.TrackPublication, _p: rtc.Participant) -> None:
             self._schedule_reconcile()
 
-        # Backfill any participants/tracks already present at startup.
-        for p in room.remote_participants.values():
-            for pub in p.track_publications.values():
+        # Backfill tracks that were already subscribed before the router started.
+        for participant in room.remote_participants.values():
+            for pub in participant.track_publications.values():
+                source_kind = self._source_kind(pub)
                 if (
-                    pub.track
+                    source_kind
+                    and pub.track
                     and pub.kind == rtc.TrackKind.KIND_AUDIO
                     and isinstance(pub.track, rtc.RemoteAudioTrack)
                 ):
-                    self._speaker_tracks[p.identity] = pub.track
+                    self._speaker_tracks[
+                        (participant.identity, source_kind)
+                    ] = pub.track
 
         self._schedule_reconcile()
 
@@ -122,10 +141,11 @@ class TranslationRouter:
         self._grace_tasks.clear()
 
         await asyncio.gather(
-            *(s.aclose() for s in self._sessions.values()),
+            *(session.aclose() for session in self._sessions.values()),
             return_exceptions=True,
         )
         self._sessions.clear()
+        self._speaker_tracks.clear()
 
     # --- Reconciliation ----------------------------------------------------
 
@@ -143,31 +163,31 @@ class TranslationRouter:
             desired = self._compute_desired_sessions()
             existing = set(self._sessions.keys())
 
-            # Cancel any pending grace teardowns for sessions we still want.
             for key in desired & set(self._grace_tasks.keys()):
                 task = self._grace_tasks.pop(key)
                 task.cancel()
 
-            # Schedule grace teardown for sessions no longer desired.
             for key in existing - desired:
                 if key not in self._grace_tasks:
                     self._grace_tasks[key] = asyncio.create_task(
                         self._grace_teardown(key)
                     )
 
-            # Start newly-desired sessions.
             for key in desired - existing:
                 if key in self._grace_tasks:
-                    # Race: an old session is still cooling down — let it finish
-                    # before starting a new one. Reschedule.
                     continue
-                speaker_identity, target_lang = key
-                track = self._speaker_tracks.get(speaker_identity)
+
+                speaker_identity, source_kind, target_lang = key
+                track = self._speaker_tracks.get(
+                    (speaker_identity, source_kind)
+                )
                 if track is None:
                     continue
+
                 session = GeminiSession(
                     room=self._room,
                     speaker_identity=speaker_identity,
+                    source_kind=source_kind,
                     speaker_track=track,
                     target_lang=target_lang,
                     gemini_api_key=self._gemini_api_key,
@@ -177,8 +197,9 @@ class TranslationRouter:
                     await session.start()
                 except Exception as exc:
                     logger.exception(
-                        "failed to start session %s -> %s: %s",
+                        "failed to start session %s/%s -> %s: %s",
                         speaker_identity,
+                        source_kind,
                         target_lang,
                         exc,
                     )
@@ -189,43 +210,77 @@ class TranslationRouter:
         if not target_langs:
             return set()
 
-        speakers = self._active_speakers()
-
         desired: set[SessionKey] = set()
-        for speaker_identity, source_lang in speakers:
-            for tgt in target_langs:
-                if tgt == source_lang:
+        for speaker_identity, source_kind, source_lang in self._active_sources():
+            for target_lang in target_langs:
+                if (
+                    source_kind == "mic"
+                    and source_lang
+                    and target_lang == source_lang
+                ):
                     continue
-                desired.add((speaker_identity, tgt))
+                desired.add(
+                    (speaker_identity, source_kind, target_lang)
+                )
         return desired
 
     def _listener_target_langs(self) -> set[str]:
-        """Languages any human listener wants (excluding the native sentinel)."""
+        """Languages requested by human listeners, excluding native passthrough."""
         langs: set[str] = set()
-        for p in self._room.remote_participants.values():
-            lang = (p.attributes or {}).get(PARTICIPANT_LANG_ATTR)
+        for participant in self._room.remote_participants.values():
+            lang = (participant.attributes or {}).get(
+                PARTICIPANT_LANG_ATTR
+            )
             if lang and lang != NATIVE_LANG:
                 langs.add(lang)
         return langs
 
-    def _active_speakers(self) -> list[tuple[str, str]]:
-        """List of (identity, lang) for speakers that have an enabled mic track."""
-        out: list[tuple[str, str]] = []
-        for p in self._room.remote_participants.values():
-            lang = (p.attributes or {}).get(PARTICIPANT_LANG_ATTR)
-            if not lang or lang == NATIVE_LANG:
-                # Without a declared language, we can't safely translate.
-                continue
-            if p.identity not in self._speaker_tracks:
-                continue
-            if not self._has_unmuted_mic(p):
-                continue
-            out.append((p.identity, lang))
+    def _active_sources(self) -> list[tuple[str, str, str | None]]:
+        """Return active (identity, source_kind, declared_language) sources."""
+        out: list[tuple[str, str, str | None]] = []
+
+        for participant in self._room.remote_participants.values():
+            lang = (participant.attributes or {}).get(
+                PARTICIPANT_LANG_ATTR
+            )
+
+            mic_key = (participant.identity, "mic")
+            if (
+                lang
+                and lang != NATIVE_LANG
+                and mic_key in self._speaker_tracks
+                and self._is_source_unmuted(participant, "mic")
+            ):
+                out.append((participant.identity, "mic", lang))
+
+            share_key = (participant.identity, "share")
+            if (
+                share_key in self._speaker_tracks
+                and self._is_source_unmuted(participant, "share")
+            ):
+                # The language of the shared movie/tab/app is unknown; do not
+                # equate it with the sharer's microphone language.
+                out.append((participant.identity, "share", None))
+
         return out
 
-    def _has_unmuted_mic(self, p: rtc.RemoteParticipant) -> bool:
-        for pub in p.track_publications.values():
-            if pub.kind == rtc.TrackKind.KIND_AUDIO and not pub.muted:
+    def _source_kind(
+        self,
+        pub: rtc.TrackPublication,
+    ) -> str | None:
+        if pub.source == rtc.TrackSource.SOURCE_MICROPHONE:
+            return "mic"
+        if pub.source == rtc.TrackSource.SOURCE_SCREENSHARE_AUDIO:
+            return "share"
+        return None
+
+    def _is_source_unmuted(
+        self,
+        participant: rtc.RemoteParticipant,
+        source_kind: str,
+    ) -> bool:
+        for pub in participant.track_publications.values():
+            if self._source_kind(pub) == source_kind and not pub.muted:
                 return True
         return False
 
@@ -237,22 +292,28 @@ class TranslationRouter:
         except asyncio.CancelledError:
             return
 
-        # If, after the grace window, the session is still undesired, kill it.
-        if key in self._sessions and key not in self._compute_desired_sessions():
+        if (
+            key in self._sessions
+            and key not in self._compute_desired_sessions()
+        ):
             session = self._sessions.pop(key)
             await session.aclose()
         self._grace_tasks.pop(key, None)
 
     def _on_participant_left(self, identity: str) -> None:
-        """Speaker fully left: immediate teardown of all their sessions."""
-        self._speaker_tracks.pop(identity, None)
+        for track_key in list(self._speaker_tracks.keys()):
+            if track_key[0] == identity:
+                self._speaker_tracks.pop(track_key, None)
+
         for key in list(self._sessions.keys()):
-            if key[0] == identity:
-                session = self._sessions.pop(key)
-                # Cancel any pending grace teardown so we don't double-close.
-                pending = self._grace_tasks.pop(key, None)
-                if pending:
-                    pending.cancel()
-                task = asyncio.create_task(session.aclose())
-                self._detached_tasks.add(task)
-                task.add_done_callback(self._detached_tasks.discard)
+            if key[0] != identity:
+                continue
+
+            session = self._sessions.pop(key)
+            pending = self._grace_tasks.pop(key, None)
+            if pending:
+                pending.cancel()
+
+            task = asyncio.create_task(session.aclose())
+            self._detached_tasks.add(task)
+            task.add_done_callback(self._detached_tasks.discard)

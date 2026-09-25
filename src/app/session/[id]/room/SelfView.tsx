@@ -5,7 +5,7 @@ import { useLocalParticipant } from "@livekit/components-react";
 import { Track } from "livekit-client";
 import { MicOffIcon } from "./icons";
 
-export default function SelfView() {
+export default function SelfView({ compact = false }: { compact?: boolean }) {
   const { localParticipant, cameraTrack, microphoneTrack } = useLocalParticipant();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
@@ -29,31 +29,37 @@ export default function SelfView() {
 
     video.srcObject = null;
     setCameraOn(false);
-  }, [cameraTrack, localParticipant]);
+  }, [cameraTrack]);
 
   const displayName = localParticipant?.name || "You";
   const initial = displayName.slice(0, 1).toUpperCase();
   const micOn = !!microphoneTrack && !microphoneTrack.isMuted;
 
   return (
-    <div className="self-view">
+    <article
+      className={`participant-tile self-view${compact ? " filmstrip-tile" : ""}`}
+    >
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className="self-view-video"
+        className="participant-video self-view-video"
         style={{ display: cameraOn ? "block" : "none" }}
       />
       {!cameraOn ? (
-        <div className="self-view-empty">
+        <div className="participant-placeholder self-view-empty">
           <span className="self-view-avatar">{initial}</span>
         </div>
       ) : null}
       {!micOn ? (
-        <span className="self-view-mic" title="Microphone off"><MicOffIcon /></span>
+        <span className="participant-mic-off self-view-mic" title="Microphone off">
+          <MicOffIcon />
+        </span>
       ) : null}
-      <span className="self-view-name">{displayName} (you)</span>
-    </div>
+      <div className="participant-label-row">
+        <span className="participant-name self-view-name">{displayName} (you)</span>
+      </div>
+    </article>
   );
 }

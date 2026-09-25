@@ -10,56 +10,53 @@ import { MicOffIcon } from "./icons";
 export default function ParticipantTile({
   participant,
   myLang,
+  compact = false,
 }: {
   participant: RemoteParticipant;
   myLang: string;
+  compact?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [videoOn, setVideoOn] = useState(false);
   const [micOn, setMicOn] = useState(false);
-  const [isScreenShare, setIsScreenShare] = useState(false);
   const isSpeaking = useIsSpeaking(participant);
   const { attributes } = useParticipantAttributes({ participant });
   const speakerLang = attributes?.[PARTICIPANT_LANG_ATTR];
   const langInfo = speakerLang ? getLanguageByCode(speakerLang) : undefined;
-  const needsTranslation = myLang !== NATIVE_LANG && !!speakerLang && speakerLang !== myLang;
+  const needsTranslation =
+    myLang !== NATIVE_LANG && !!speakerLang && speakerLang !== myLang;
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const sync = () => {
-      let selectedTrack: { attach: (element: HTMLVideoElement) => unknown } | null = null;
-      let selectedSource: Track.Source | null = null;
-      let mic = false;
-
-      for (const publication of participant.videoTrackPublications.values()) {
-        if (!publication.track || publication.isMuted) continue;
-        if (publication.source === Track.Source.ScreenShare) {
-          selectedTrack = publication.track;
-          selectedSource = Track.Source.ScreenShare;
-          break;
-        }
-        if (publication.source === Track.Source.Camera) {
-          selectedTrack = publication.track;
-          selectedSource = Track.Source.Camera;
-        }
-      }
-
-      for (const publication of participant.audioTrackPublications.values()) {
-        if (publication.source === Track.Source.Microphone && !publication.isMuted) mic = true;
-      }
+      const cameraPublication = Array.from(
+        participant.videoTrackPublications.values(),
+      ).find(
+        (publication) =>
+          publication.source === Track.Source.Camera &&
+          !!publication.track &&
+          !publication.isMuted,
+      );
 
       for (const publication of participant.videoTrackPublications.values()) {
         publication.track?.detach(video);
       }
 
-      if (selectedTrack) selectedTrack.attach(video);
+      if (cameraPublication?.track) cameraPublication.track.attach(video);
       else video.srcObject = null;
 
-      setVideoOn(!!selectedTrack);
-      setIsScreenShare(selectedSource === Track.Source.ScreenShare);
-      setMicOn(mic);
+      const micPublication = Array.from(
+        participant.audioTrackPublications.values(),
+      ).find(
+        (publication) =>
+          publication.source === Track.Source.Microphone &&
+          !publication.isMuted,
+      );
+
+      setVideoOn(!!cameraPublication?.track);
+      setMicOn(!!micPublication);
     };
 
     sync();
@@ -87,13 +84,17 @@ export default function ParticipantTile({
   const initial = displayName.slice(0, 1).toUpperCase();
 
   return (
-    <article className={`participant-tile${isSpeaking && micOn ? " is-speaking" : ""}`}>
+    <article
+      className={`participant-tile${compact ? " filmstrip-tile" : ""}${
+        isSpeaking && micOn ? " is-speaking" : ""
+      }`}
+    >
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className={`participant-video${isScreenShare ? " is-screen-share" : ""}`}
+        className="participant-video"
         style={{ display: videoOn ? "block" : "none" }}
       />
       {!videoOn ? (
@@ -103,15 +104,19 @@ export default function ParticipantTile({
       ) : null}
 
       {!micOn ? (
-        <span className="participant-mic-off" title="Microphone off"><MicOffIcon /></span>
+        <span className="participant-mic-off" title="Microphone off">
+          <MicOffIcon />
+        </span>
       ) : null}
 
       <div className="participant-label-row">
         <span className="participant-name">{displayName}</span>
-        {isScreenShare ? <span className="participant-tag">Screen</span> : null}
-        {langInfo ? (
+        {!compact && langInfo ? (
           <span className="participant-tag">
-            {langInfo.flag} {needsTranslation ? `→ ${myLang.toUpperCase()}` : langInfo.code.toUpperCase()}
+            {langInfo.flag}{" "}
+            {needsTranslation
+              ? `→ ${myLang.toUpperCase()}`
+              : langInfo.code.toUpperCase()}
           </span>
         ) : null}
       </div>
