@@ -8,7 +8,6 @@ import {
 } from "@livekit/components-react";
 import { ConnectionState, ParticipantKind, RoomEvent } from "livekit-client";
 import { PARTICIPANT_LANG_ATTR } from "@/lib/config";
-import { getLanguageByCode } from "@/lib/languages";
 import { useTranslationRouting } from "./useTranslationRouting";
 import VideoGrid from "./VideoGrid";
 import SelfView from "./SelfView";
@@ -28,10 +27,17 @@ export default function InCall({
   const remotes = useRemoteParticipants();
   const [lang, setLang] = useState(initialLang);
   const [captionsOpen, setCaptionsOpen] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
-  // Push the local lang into participant attributes so the agent + peers see
-  // it. setAttributes is silently dropped before the room is connected, so we
-  // both fire on `lang` change and re-fire when the connection becomes ready.
+  useEffect(() => {
+    const started = Date.now();
+    const interval = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     if (!localParticipant || !room) return;
     const apply = () => {
@@ -49,47 +55,50 @@ export default function InCall({
   useTranslationRouting(lang);
 
   const humanRemotes = useMemo(
-    () => remotes.filter((p) => p.kind !== ParticipantKind.AGENT),
+    () => remotes.filter((participant) => participant.kind !== ParticipantKind.AGENT),
     [remotes],
   );
+
   const peerLangs = useMemo(() => {
     const map = new Map<string, string | undefined>();
-    for (const p of humanRemotes) {
-      map.set(p.identity, p.attributes?.[PARTICIPANT_LANG_ATTR]);
+    for (const participant of humanRemotes) {
+      map.set(participant.identity, participant.attributes?.[PARTICIPANT_LANG_ATTR]);
     }
     return map;
   }, [humanRemotes]);
 
-  const langInfo = getLanguageByCode(lang);
   const inviteUrl =
     typeof window !== "undefined"
       ? `${window.location.origin}/session/${room.name}`
       : "";
 
+  const roomLabel = room.name ? room.name.slice(0, 8) : "meeting";
+
   return (
-    <div
-      className={`room-shell${captionsOpen ? " room-shell--captions-open" : ""}`}
-    >
-      <div className="room">
-        {/* Top chrome */}
-        <header className="room-chrome">
-          <div className="chrome-meta">
-            <span>
-              {humanRemotes.length + 1}{" "}
-              {humanRemotes.length === 0 ? "person" : "people"}
+    <div className={`room-shell${captionsOpen ? " room-shell--captions-open" : ""}`}>
+      <section className="room">
+        <header className="meeting-header">
+          <div className="meeting-brand">
+            <span className="orbit-mark orbit-mark--small" aria-hidden>
+              <span className="orbit-mark-core" />
+              <span className="orbit-mark-ring" />
             </span>
-            <span className="divider">·</span>
-            <span>
-              Hearing in{" "}
-              <strong style={{ color: "var(--fg)", fontWeight: 500 }}>
-                {langInfo?.name ?? lang}
-              </strong>
-            </span>
+            <span>Orbit Meeting</span>
           </div>
-          <LanguagePill value={lang} onChange={setLang} />
+
+          <div className="meeting-title-block">
+            <strong>Orbit · {roomLabel}</strong>
+            <span>{formatElapsed(elapsed)}</span>
+          </div>
+
+          <div className="meeting-header-actions">
+            <span className="meeting-participant-count">
+              {humanRemotes.length + 1} participant{humanRemotes.length === 0 ? "" : "s"}
+            </span>
+            <LanguagePill value={lang} onChange={setLang} />
+          </div>
         </header>
 
-        {/* Stage */}
         <main className="room-stage">
           {humanRemotes.length === 0 ? (
             <EmptyStage inviteUrl={inviteUrl} />
@@ -99,16 +108,14 @@ export default function InCall({
           <SelfView />
         </main>
 
-        {/* Control bar */}
         <ControlBar
           onLeave={onLeave}
           inviteUrl={inviteUrl}
           captionsOpen={captionsOpen}
-          onToggleCaptions={() => setCaptionsOpen((v) => !v)}
+          onToggleCaptions={() => setCaptionsOpen((value) => !value)}
         />
-      </div>
+      </section>
 
-      {/* Captions — sibling column of .room so the room is pushed, not covered */}
       <CaptionsSidebar
         open={captionsOpen}
         onClose={() => setCaptionsOpen(false)}
@@ -121,32 +128,35 @@ export default function InCall({
 
 function EmptyStage({ inviteUrl }: { inviteUrl: string }) {
   const [copied, setCopied] = useState(false);
+
   async function copy() {
     try {
       await navigator.clipboard.writeText(inviteUrl);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopied(false), 1800);
     } catch {
       // ignored
     }
   }
 
   return (
-    <div className="empty-stage enter">
-      <span className="empty-stage-eyebrow">You&apos;re alone in here</span>
-      <h2 className="display display-lg" style={{ marginBottom: 12 }}>
-        Waiting for others
-      </h2>
-      <p className="body">
-        Share the link below. Translation spins up automatically when someone
-        joins with a different language.
-      </p>
-      <div className="invite-card">
-        <div className="invite-card-url">{inviteUrl}</div>
-        <button className="invite-card-btn" onClick={copy}>
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
+    <div className="jitsi-empty-stage">
+      <div className="jitsi-empty-avatar">O</div>
+      <h2>You&apos;re the only one in the meeting</h2>
+      <p>Invite others to join using the meeting link.</p>
+      <button className="jitsi-primary-button jitsi-invite-button" onClick={copy}>
+        {copied ? "Meeting link copied" : "Invite people"}
+      </button>
     </div>
   );
+}
+
+function formatElapsed(total: number) {
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const padded = [minutes, seconds].map((value) => String(value).padStart(2, "0"));
+  return hours > 0
+    ? `${String(hours).padStart(2, "0")}:${padded.join(":")}`
+    : padded.join(":");
 }

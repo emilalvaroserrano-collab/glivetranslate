@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocalParticipant } from "@livekit/components-react";
 import { Track } from "livekit-client";
+import { MicOffIcon } from "./icons";
 
 export default function SelfView() {
-  const { localParticipant, cameraTrack } = useLocalParticipant();
+  const { localParticipant, cameraTrack, microphoneTrack } = useLocalParticipant();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
 
@@ -17,6 +18,7 @@ export default function SelfView() {
       !!track &&
       cameraTrack?.source === Track.Source.Camera &&
       !cameraTrack.isMuted;
+
     if (on && track) {
       track.attach(video);
       setCameraOn(true);
@@ -24,11 +26,14 @@ export default function SelfView() {
         track.detach(video);
       };
     }
+
     video.srcObject = null;
     setCameraOn(false);
   }, [cameraTrack, localParticipant]);
 
-  const displayName = localParticipant?.name || "you";
+  const displayName = localParticipant?.name || "You";
+  const initial = displayName.slice(0, 1).toUpperCase();
+  const micOn = !!microphoneTrack && !microphoneTrack.isMuted;
 
   return (
     <div className="self-view">
@@ -40,11 +45,15 @@ export default function SelfView() {
         className="self-view-video"
         style={{ display: cameraOn ? "block" : "none" }}
       />
-      {!cameraOn && (
+      {!cameraOn ? (
         <div className="self-view-empty">
-          <span>{displayName}</span>
+          <span className="self-view-avatar">{initial}</span>
         </div>
-      )}
+      ) : null}
+      {!micOn ? (
+        <span className="self-view-mic" title="Microphone off"><MicOffIcon /></span>
+      ) : null}
+      <span className="self-view-name">{displayName} (you)</span>
     </div>
   );
 }

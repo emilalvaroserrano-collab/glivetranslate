@@ -1,8 +1,9 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PICKER_LANGUAGES } from "@/lib/languages";
+import { CamOffIcon, MicOffIcon } from "./room/icons";
 
 const STORAGE_KEY_NAME = "lt.displayName";
 const STORAGE_KEY_LANG = "lt.lang";
@@ -19,7 +20,6 @@ export default function PreFlightPage({
   const [lang, setLang] = useState<string>("en");
   const [shareCopied, setShareCopied] = useState(false);
 
-  // Restore last-used name + language so returning users skip retyping.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const savedName = window.sessionStorage.getItem(STORAGE_KEY_NAME);
@@ -27,6 +27,11 @@ export default function PreFlightPage({
     if (savedName) setDisplayName(savedName);
     if (savedLang) setLang(savedLang);
   }, []);
+
+  const initial = useMemo(
+    () => (displayName.trim().slice(0, 1) || "O").toUpperCase(),
+    [displayName],
+  );
 
   function handleJoin() {
     if (!displayName.trim()) return;
@@ -47,41 +52,52 @@ export default function PreFlightPage({
   }
 
   return (
-    <div className="page">
-      <div className="container">
-        <h1 className="display display-lg enter" style={{ marginBottom: 8 }}>
-          Join the call
-        </h1>
-        <p
-          className="body enter-d1"
-          style={{ marginBottom: 32 }}
-        >
-          Pick your language — that&apos;s what you&apos;ll speak and what you&apos;ll
-          hear everyone else in.
-        </p>
+    <main className="prejoin-page">
+      <div className="prejoin-brand">
+        <span className="orbit-mark" aria-hidden>
+          <span className="orbit-mark-core" />
+          <span className="orbit-mark-ring" />
+        </span>
+        <span>Orbit Meeting</span>
+      </div>
 
-        <div className="enter-d2" style={{ display: "flex", flexDirection: "column", gap: 20, marginBottom: 32 }}>
-          <label className="label" style={{ display: "block" }}>
-            Your name
+      <section className="prejoin-shell">
+        <div className="prejoin-preview">
+          <div className="prejoin-avatar">{initial}</div>
+          <div className="prejoin-preview-controls" aria-hidden>
+            <span className="prejoin-round-control"><MicOffIcon /></span>
+            <span className="prejoin-round-control"><CamOffIcon /></span>
+          </div>
+        </div>
+
+        <div className="prejoin-panel">
+          <h1>Join meeting</h1>
+          <p className="prejoin-help">
+            Enter your name and choose the language you want to hear.
+          </p>
+
+          <label className="prejoin-label">
+            Display name
             <input
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="e.g. Jesse"
+              placeholder="Enter your name"
               autoFocus
-              className="select-field"
-              style={{ marginTop: 8, backgroundImage: "none", paddingRight: 16 }}
+              className="jitsi-field"
               maxLength={40}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") handleJoin();
+              }}
             />
           </label>
 
-          <label className="label" style={{ display: "block" }}>
-            Language
+          <label className="prejoin-label">
+            Translation language
             <select
               value={lang}
               onChange={(e) => setLang(e.target.value)}
-              className="select-field"
-              style={{ marginTop: 8 }}
+              className="jitsi-field jitsi-select"
             >
               {PICKER_LANGUAGES.map((l) => (
                 <option key={l.code} value={l.code}>
@@ -90,29 +106,24 @@ export default function PreFlightPage({
               ))}
             </select>
           </label>
-        </div>
 
-        <div className="enter-d3" style={{ display: "flex", gap: 12, flexDirection: "column" }}>
           <button
-            className="btn btn-dark"
+            className="jitsi-primary-button prejoin-join"
             onClick={handleJoin}
             disabled={!displayName.trim()}
             id="join-btn"
           >
-            Join the call
+            Join meeting
           </button>
-          <button
-            className="btn btn-outline"
-            onClick={copyInviteLink}
-          >
-            {shareCopied ? "Link copied!" : "Copy invite link"}
+          <button className="jitsi-secondary-button" onClick={copyInviteLink}>
+            {shareCopied ? "Meeting link copied" : "Copy meeting link"}
           </button>
-        </div>
 
-        <p className="mono enter-d4" style={{ marginTop: 32 }}>
-          Camera and mic stay off until you turn them on.
-        </p>
-      </div>
-    </div>
+          <p className="prejoin-note">
+            Your microphone and camera stay off until you enable them.
+          </p>
+        </div>
+      </section>
+    </main>
   );
 }

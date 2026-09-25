@@ -3,6 +3,18 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+function OrbitMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={`orbit-brand${compact ? " orbit-brand--compact" : ""}`}>
+      <span className="orbit-mark" aria-hidden>
+        <span className="orbit-mark-core" />
+        <span className="orbit-mark-ring" />
+      </span>
+      <span className="orbit-brand-name">Orbit Meeting</span>
+    </div>
+  );
+}
+
 export default function Home() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -14,83 +26,43 @@ export default function Home() {
   }
 
   return (
-    <div className="page">
-      <div className="container" style={{ textAlign: "center" }}>
-        {/* Title */}
-        <h1 className="display display-xl enter" style={{ marginBottom: 24 }}>
-          <em>Live</em> Translate
-        </h1>
+    <main className="orbit-welcome">
+      <header className="orbit-welcome-topbar">
+        <OrbitMark compact />
+        <span className="orbit-welcome-secure">Secure video meetings</span>
+      </header>
 
-        {/* Subtitle */}
-        <p
-          className="body enter-d1"
-          style={{ maxWidth: 340, margin: "0 auto 48px" }}
-        >
-          Multi-language video calls. Everyone picks their language.
-          Translation spins up on demand.
-        </p>
+      <section className="orbit-welcome-hero">
+        <div className="orbit-welcome-copy">
+          <OrbitMark />
+          <h1>Meet, talk, and understand everyone.</h1>
+          <p>
+            Start an Orbit Meeting and translate incoming conversations into
+            the language you choose.
+          </p>
+        </div>
 
-        {/* CTA */}
-        <div className="enter-d2">
+        <div className="orbit-start-card">
+          <div className="orbit-start-card-title">Start a new meeting</div>
+          <div className="orbit-start-card-subtitle">
+            Create a private room and share the invite link with anyone.
+          </div>
           <button
-            className="btn btn-dark"
+            className="jitsi-primary-button"
             onClick={createSession}
             disabled={loading}
             id="create-session-btn"
           >
-            {loading ? (
-              <>
-                <span className="spinner" /> Creating…
-              </>
-            ) : (
-              "Create session"
-            )}
+            {loading ? <span className="jitsi-spinner" /> : null}
+            {loading ? "Creating meeting…" : "Start meeting"}
           </button>
         </div>
+      </section>
 
-        {/* Steps */}
-        <div
-          className="enter-d3"
-          style={{
-            marginTop: 80,
-            display: "flex",
-            flexDirection: "column",
-            gap: 0,
-            textAlign: "left",
-          }}
-        >
-          <hr className="rule" />
-          {[
-            "Pick your language and turn on your camera",
-            "Share the link with everyone joining the call",
-            "Each language pair spins up one Gemini session on demand",
-          ].map((text, i) => (
-            <div key={i}>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 16,
-                  padding: "18px 0",
-                  alignItems: "baseline",
-                }}
-              >
-                <span className="mono" style={{ flexShrink: 0 }}>
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <p className="body-sm" style={{ color: "var(--fg-secondary)" }}>
-                  {text}
-                </p>
-              </div>
-              <hr className="rule" />
-            </div>
-          ))}
-        </div>
-
-        {/* Footer */}
-        <p className="mono enter-d4" style={{ marginTop: 48 }}>
-          Powered by Gemini Live API + LiveKit
-        </p>
-      </div>
-    </div>
+      <footer className="orbit-welcome-footer">
+        <span>Orbit Meeting</span>
+        <span>Realtime multilingual conferencing</span>
+      </footer>
+    </main>
   );
 }

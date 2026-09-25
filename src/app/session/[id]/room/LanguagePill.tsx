@@ -1,7 +1,7 @@
 "use client";
 
 import { PICKER_LANGUAGES, getLanguageByCode } from "@/lib/languages";
-import { ChevronDownIcon } from "./icons";
+import { ChevronDownIcon, GlobeIcon } from "./icons";
 
 export default function LanguagePill({
   value,
@@ -13,24 +13,23 @@ export default function LanguagePill({
   const current = getLanguageByCode(value);
 
   return (
-    <label className="lang-pill">
-      <span className="lang-pill-prefix">Lang</span>
-      <span className="lang-pill-flag" aria-hidden>
-        {current?.flag ?? "🌐"}
+    <label className="jitsi-language-control" title="Translation language">
+      <span className="jitsi-language-icon"><GlobeIcon /></span>
+      <span className="jitsi-language-copy">
+        <span className="jitsi-language-label">Translate to</span>
+        <span className="jitsi-language-name">
+          {current?.flag} {current?.name ?? "Language"}
+        </span>
       </span>
-      <span className="lang-pill-name">{current?.name ?? "Pick language"}</span>
-      <span className="lang-pill-chevron" aria-hidden>
-        <ChevronDownIcon />
-      </span>
+      <span className="jitsi-language-chevron"><ChevronDownIcon /></span>
       <select
-        className="lang-pill-select"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        aria-label="Listening language"
+        aria-label="Translation language"
       >
-        {PICKER_LANGUAGES.map((l) => (
-          <option key={l.code} value={l.code}>
-            {l.flag} {l.name}
+        {PICKER_LANGUAGES.map((language) => (
+          <option key={language.code} value={language.code}>
+            {language.flag} {language.name}
           </option>
         ))}
       </select>
