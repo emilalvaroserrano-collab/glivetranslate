@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useLocalParticipant } from "@livekit/components-react";
 import { Track } from "livekit-client";
 import { MicOffIcon } from "./icons";
@@ -8,28 +8,26 @@ import { MicOffIcon } from "./icons";
 export default function SelfView({ compact = false }: { compact?: boolean }) {
   const { localParticipant, cameraTrack, microphoneTrack } = useLocalParticipant();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [cameraOn, setCameraOn] = useState(false);
+
+  const cameraOn =
+    !!cameraTrack?.track &&
+    cameraTrack.source === Track.Source.Camera &&
+    !cameraTrack.isMuted;
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
     const track = cameraTrack?.track;
-    const on =
-      !!track &&
-      cameraTrack?.source === Track.Source.Camera &&
-      !cameraTrack.isMuted;
+    if (!video) return;
 
-    if (on && track) {
+    if (cameraOn && track) {
       track.attach(video);
-      setCameraOn(true);
       return () => {
         track.detach(video);
       };
     }
 
     video.srcObject = null;
-    setCameraOn(false);
-  }, [cameraTrack]);
+  }, [cameraTrack, cameraOn]);
 
   const displayName = localParticipant?.name || "You";
   const initial = displayName.slice(0, 1).toUpperCase();

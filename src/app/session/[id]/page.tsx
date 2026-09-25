@@ -21,11 +21,14 @@ export default function PreFlightPage({
   const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const savedName = window.sessionStorage.getItem(STORAGE_KEY_NAME);
-    const savedLang = window.sessionStorage.getItem(STORAGE_KEY_LANG);
-    if (savedName) setDisplayName(savedName);
-    if (savedLang) setLang(savedLang);
+    const frame = window.requestAnimationFrame(() => {
+      const savedName = window.sessionStorage.getItem(STORAGE_KEY_NAME);
+      const savedLang = window.sessionStorage.getItem(STORAGE_KEY_LANG);
+      if (savedName) setDisplayName(savedName);
+      if (savedLang) setLang(savedLang);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   const initial = useMemo(
@@ -99,9 +102,9 @@ export default function PreFlightPage({
               onChange={(e) => setLang(e.target.value)}
               className="jitsi-field jitsi-select"
             >
-              {PICKER_LANGUAGES.map((l) => (
-                <option key={l.code} value={l.code}>
-                  {l.flag} {l.name}
+              {PICKER_LANGUAGES.map((language) => (
+                <option key={language.code} value={language.code}>
+                  {language.flag} {language.name}
                 </option>
               ))}
             </select>

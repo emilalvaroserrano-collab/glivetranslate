@@ -31,27 +31,32 @@ export default function RoomClient({ sessionId }: { sessionId: string }) {
   const [displayName, setDisplayName] = useState<string>("");
   const [initialLang, setInitialLang] = useState<string>("en");
 
-  // Pull name + lang chosen in the pre-flight screen. If missing, send the
-  // user back to the pre-flight so they can pick.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const name = window.sessionStorage.getItem(STORAGE_KEY_NAME);
-    const lang = window.sessionStorage.getItem(STORAGE_KEY_LANG);
-    if (!name || !lang) {
-      router.replace(`/session/${sessionId}`);
-      return;
-    }
-    setDisplayName(name);
-    setInitialLang(lang);
+    const frame = window.requestAnimationFrame(() => {
+      const name = window.sessionStorage.getItem(STORAGE_KEY_NAME);
+      const lang = window.sessionStorage.getItem(STORAGE_KEY_LANG);
+
+      if (!name || !lang) {
+        router.replace(`/session/${sessionId}`);
+        return;
+      }
+
+      setDisplayName(name);
+      setInitialLang(lang);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [router, sessionId]);
 
-  // Mint a LiveKit token.
   useEffect(() => {
     if (!displayName) return;
+
+    const controller = new AbortController();
     const url = `/api/token?room=${encodeURIComponent(
       sessionId,
     )}&identity=${encodeURIComponent(identity)}&name=${encodeURIComponent(displayName)}`;
-    fetch(url)
+
+    fetch(url, { signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -63,7 +68,12 @@ export default function RoomClient({ sessionId }: { sessionId: string }) {
         setToken(data.token);
         setServerUrl(data.serverUrl);
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(err instanceof Error ? err.message : String(err));
+      });
+
+    return () => controller.abort();
   }, [sessionId, identity, displayName]);
 
   function handleLeave() {
@@ -103,7 +113,6 @@ export default function RoomClient({ sessionId }: { sessionId: string }) {
     <LiveKitRoom
       token={token}
       serverUrl={serverUrl}
-      // Camera + mic default OFF (grill Q12); user opts in via the control bar.
       video={false}
       audio={false}
       connect={true}
@@ -113,12 +122,8 @@ export default function RoomClient({ sessionId }: { sessionId: string }) {
     >
       <InCall initialLang={initialLang} onLeave={handleLeave} />
       <RoomAudioRenderer />
-      {/* Browsers block audio playback until a user gesture. A listener whose
-          mic stays off never triggers that gesture, so inbound translation
-          audio would silently never play. StartAudio renders only while
-          playback is blocked and calls room.startAudio() on click. */}
       <StartAudio
-        label="🔊 Tap to enable translated audio"
+        label="Tap to enable translated audio"
         className="btn"
         style={{
           position: "fixed",
